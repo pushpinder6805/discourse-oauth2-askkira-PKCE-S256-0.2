@@ -41,21 +41,16 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
     keys.empty? ? result : recurse(result, keys)
   end
 
-  # --- PKCE Support ---
-  #
-  # Generates PKCE `code_verifier` and `code_challenge`
-  # Stores `code_verifier` in the session for later use in token request
+  # --- PKCE Support with Fixed Values ---
   def request_phase
-    # Generate a secure random `code_verifier`
-    code_verifier = SecureRandom.urlsafe_base64(64)
+    # Fixed values provided by the client
+    code_challenge = "y4mP7n8ASYkRXeLkilSb6TguU8pyDPRSmbgBnJJhDRw"
+    code_verifier = "m1z-5XPQrQ_sW5xEEs_Zt1QDDVesDzCK6WXbusHwe5g"
 
-    # Compute `code_challenge` (SHA-256 hash of `code_verifier`)
-    code_challenge = Base64.urlsafe_encode64(OpenSSL::Digest::SHA256.digest(code_verifier)).delete("=")
-
-    # Store `code_verifier` in session for later token request
+    # Store code_verifier in session for later use
     session["oauth2_code_verifier"] = code_verifier
 
-    # Ensure authorize_params is a hash and add PKCE parameters
+    # Add PKCE parameters to authorization request
     options.authorize_params ||= {}
     options.authorize_params[:code_challenge] = code_challenge
     options.authorize_params[:code_challenge_method] = "S256"
@@ -63,9 +58,7 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
     super
   end
 
-  # --- Token Exchange: Send `code_verifier` ---
-  #
-  # Fix: Include `code_verifier` when exchanging authorization code for token
+  # --- Token Exchange: Send `code_verifier` to Fix 400 Error ---
   def callback_phase
     return fail!(:invalid_state, 'State parameter missing') unless request.params['state'] == session.delete('oauth2_state')
 
@@ -75,7 +68,7 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
       grant_type: 'authorization_code',
       redirect_uri: callback_url,
       code: request.params['code'],
-      code_verifier: session.delete('oauth2_code_verifier') # ✅ Fix: Ensure `code_verifier` is sent
+      code_verifier: "m1z-5XPQrQ_sW5xEEs_Zt1QDDVesDzCK6WXbusHwe5g" # ✅ Always use fixed value
     }
 
     # Exchange authorization code for access token
