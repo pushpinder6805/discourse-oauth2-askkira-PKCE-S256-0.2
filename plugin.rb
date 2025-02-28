@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# name: discourse-oauth2-askkira-PKCE-S256
+# name: discourse-oauth2-askkira-PKCE-S256-0.2
 # about: Allows users to login to your forum using a basic OAuth2 provider. with discourse-oauth2-askkira-PKCE-S256
 # meta_topic_id: 33879
 # version: 0.1
