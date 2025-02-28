@@ -34,13 +34,10 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
 
                           if SiteSetting.oauth2_authorize_signup_url.present? &&
                                ActionDispatch::Request.new(env).params["signup"].present?
-                            opts[:client_options][
-                              :authorize_url
-                            ] = SiteSetting.oauth2_authorize_signup_url
+                            opts[:client_options][:authorize_url] = SiteSetting.oauth2_authorize_signup_url
                           end
 
-                          if SiteSetting.oauth2_send_auth_header? &&
-                               SiteSetting.oauth2_send_auth_body?
+                          if SiteSetting.oauth2_send_auth_header? && SiteSetting.oauth2_send_auth_body?
                             opts[:client_options][:auth_scheme] = :request_body
                             opts[:token_params] = {
                               headers: {
@@ -53,9 +50,7 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
                             opts[:client_options][:auth_scheme] = :request_body
                           end
 
-                          if SiteSetting.oauth2_scope.present?
-                            opts[:scope] = SiteSetting.oauth2_scope
-                          end
+                          opts[:scope] = SiteSetting.oauth2_scope if SiteSetting.oauth2_scope.present?
 
                           opts[:client_options][:connection_build] = lambda do |builder|
                             if SiteSetting.oauth2_debug_auth && defined?(OAuth2FaradayFormatter)
@@ -71,68 +66,7 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
   end
 
   def basic_auth_header
-    "Basic " +
-      Base64.strict_encode64("#{SiteSetting.oauth2_client_id}:#{SiteSetting.oauth2_client_secret}")
-  end
-
-  def walk_path(fragment, segments, seg_index = 0)
-    first_seg = segments[seg_index]
-    return if first_seg.blank? || fragment.blank?
-    return nil unless fragment.is_a?(Hash) || fragment.is_a?(Array)
-    first_seg = segments[seg_index].scan(/([\d+])/).length > 0 ? first_seg.split("[")[0] : first_seg
-    if fragment.is_a?(Hash)
-      deref = fragment[first_seg]
-    else
-      array_index = 0
-      if (seg_index > 0)
-        last_index = segments[seg_index - 1].scan(/([\d+])/).flatten() || [0]
-        array_index = last_index.length > 0 ? last_index[0].to_i : 0
-      end
-      if fragment.any? && fragment.length >= array_index - 1
-        deref = fragment[array_index][first_seg]
-      else
-        deref = nil
-      end
-    end
-
-    if deref.blank? || seg_index == segments.size - 1
-      deref
-    else
-      seg_index += 1
-      walk_path(deref, segments, seg_index)
-    end
-  end
-
-  def json_walk(result, user_json, prop, custom_path: nil)
-    path = custom_path || SiteSetting.public_send("oauth2_json_#{prop}_path")
-    if path.present?
-      path = path.gsub(".[].", ".").gsub(".[", "[")
-      segments = parse_segments(path)
-      val = walk_path(user_json, segments)
-      result[prop] = val.presence || (val == [] ? nil : val)
-    end
-  end
-
-  def parse_segments(path)
-    segments = [+""] 
-    quoted = false
-    escaped = false
-
-    path.split("").each do |char|
-      next_char_escaped = false
-      if !escaped && (char == '"')
-        quoted = !quoted
-      elsif !escaped && !quoted && (char == ".")
-        segments.append +"" 
-      elsif !escaped && (char == '\\')
-        next_char_escaped = true
-      else
-        segments.last << char
-      end
-      escaped = next_char_escaped
-    end
-
-    segments
+    "Basic " + Base64.strict_encode64("#{SiteSetting.oauth2_client_id}:#{SiteSetting.oauth2_client_secret}")
   end
 
   def log(info)
@@ -146,30 +80,41 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
     bearer_token = "Bearer #{token}"
     connection = Faraday.new { |f| f.adapter FinalDestination::FaradayAdapter }
     headers = { "Authorization" => bearer_token, "Accept" => "application/json" }
-    user_json_response = connection.run_request(user_json_method, user_json_url, nil, headers)
 
-    log <<-LOG
-      user_json request: #{user_json_method} #{user_json_url}
-      request headers: #{headers}
-      response status: #{user_json_response.status}
-      response body:
-      #{user_json_response.body}
-    LOG
+    begin
+      user_json_response = connection.run_request(user_json_method, user_json_url, nil, headers)
 
-    if user_json_response.status == 200
-      user_json = JSON.parse(user_json_response.body)
-      log("user_json:\n#{user_json.to_yaml}")
-      result = {}
-      if user_json.present?
-        json_walk(result, user_json, :user_id)
-        json_walk(result, user_json, :username)
-        json_walk(result, user_json, :name)
-        json_walk(result, user_json, :email)
-        json_walk(result, user_json, :email_verified)
-        json_walk(result, user_json, :avatar)
+      log <<-LOG
+        user_json request: #{user_json_method} #{user_json_url}
+        request headers: #{headers}
+        response status: #{user_json_response.status}
+        response body:
+        #{user_json_response.body}
+      LOG
+
+      if user_json_response.status == 200
+        user_json = JSON.parse(user_json_response.body)
+        log("user_json:\n#{user_json.to_yaml}")
+        result = {}
+
+        if user_json.present?
+          %w[user_id username name email email_verified avatar].each do |prop|
+            json_walk(result, user_json, prop.to_sym)
+          end
+        end
+        result
+      else
+        Rails.logger.error "OAuth2 User Fetch Error: Unexpected response code #{user_json_response.status}"
+        nil
       end
-      result
-    else
+    rescue JSON::ParserError => e
+      Rails.logger.error "OAuth2 JSON Parsing Error: #{e.class} - #{e.message}"
+      nil
+    rescue Faraday::ConnectionFailed => e
+      Rails.logger.error "OAuth2 Connection Error: #{e.class} - #{e.message}"
+      nil
+    rescue StandardError => e
+      Rails.logger.error "OAuth2 Unknown Error: #{e.class} - #{e.message}"
       nil
     end
   end
@@ -177,21 +122,31 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
   def after_authenticate(auth, existing_account: nil)
     log "after_authenticate response: #{auth.to_yaml}"
 
-    if SiteSetting.oauth2_fetch_user_details? && SiteSetting.oauth2_user_json_url.present?
-      if fetched_user_details = fetch_user_details(auth["credentials"]["token"], auth["uid"])
-        %w[user_id username name email email_verified avatar].each do |prop|
-          auth["info"][prop] = fetched_user_details[prop.to_sym] if fetched_user_details[prop.to_sym]
+    begin
+      if SiteSetting.oauth2_fetch_user_details? && SiteSetting.oauth2_user_json_url.present?
+        fetched_user_details = fetch_user_details(auth["credentials"]["token"], auth["uid"])
+
+        if fetched_user_details
+          %w[user_id username name email email_verified avatar].each do |prop|
+            auth["info"][prop] = fetched_user_details[prop.to_sym] if fetched_user_details[prop.to_sym]
+          end
+        else
+          Rails.logger.error "OAuth2 Authentication Error: Could not fetch user details."
+          return fail!(:invalid_response, "Failed to fetch user details from OAuth2 provider.")
         end
       end
-    end
 
-    # ✅ PKCE: Ensure `code_verifier` is deleted after authentication
-    if auth["rack.session"] && auth["rack.session"]["oauth2_code_verifier"]
-      Rails.logger.info "OAuth2 PKCE: Clearing stored code_verifier from session."
-      auth["rack.session"].delete("oauth2_code_verifier")
-    end
+      # ✅ PKCE: Ensure `code_verifier` is deleted after authentication
+      if auth["rack.session"] && auth["rack.session"]["oauth2_code_verifier"]
+        Rails.logger.info "OAuth2 PKCE: Clearing stored code_verifier from session."
+        auth["rack.session"].delete("oauth2_code_verifier")
+      end
 
-    super(auth, existing_account: existing_account)
+      super(auth, existing_account: existing_account)
+    rescue StandardError => e
+      Rails.logger.error "OAuth2 Authentication Error: #{e.class} - #{e.message}"
+      return fail!(:unknown_error, "An unknown error occurred during authentication.")
+    end
   end
 
   def enabled?
