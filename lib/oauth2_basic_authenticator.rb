@@ -167,11 +167,6 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
         json_walk(result, user_json, :email)
         json_walk(result, user_json, :email_verified)
         json_walk(result, user_json, :avatar)
-
-        DiscoursePluginRegistry.oauth2_basic_additional_json_paths.each do |detail|
-          prop = "extra:#{detail}"
-          json_walk(result, user_json, prop, custom_path: detail)
-        end
       end
       result
     else
@@ -179,61 +174,20 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
     end
   end
 
-  def primary_email_verified?(auth)
-    return true if SiteSetting.oauth2_email_verified
-    verified = auth["info"]["email_verified"]
-    verified = true if verified == "true"
-    verified = false if verified == "false"
-    verified
-  end
-
-  def always_update_user_email?
-    SiteSetting.oauth2_overrides_email
-  end
-
   def after_authenticate(auth, existing_account: nil)
-    log <<-LOG
-      after_authenticate response:
-      creds:
-      #{auth["credentials"].to_hash.to_yaml}
-      uid: #{auth["uid"]}
-      info:
-      #{auth["info"].to_hash.to_yaml}
-      extra:
-      #{auth["extra"].to_hash.to_yaml}
-    LOG
+    log "after_authenticate response: #{auth.to_yaml}"
 
     if SiteSetting.oauth2_fetch_user_details? && SiteSetting.oauth2_user_json_url.present?
       if fetched_user_details = fetch_user_details(auth["credentials"]["token"], auth["uid"])
-        auth["uid"] = fetched_user_details[:user_id] if fetched_user_details[:user_id]
-        auth["info"]["nickname"] = fetched_user_details[:username] if fetched_user_details[:username]
-        auth["info"]["image"] = fetched_user_details[:avatar] if fetched_user_details[:avatar]
-        %w[name email email_verified].each do |property|
-          auth["info"][property] = fetched_user_details[property.to_sym] if fetched_user_details[property.to_sym]
+        %w[user_id username name email email_verified avatar].each do |prop|
+          auth["info"][prop] = fetched_user_details[prop.to_sym] if fetched_user_details[prop.to_sym]
         end
-
-        DiscoursePluginRegistry.oauth2_basic_additional_json_paths.each do |detail|
-          auth["extra"][detail] = fetched_user_details["extra:#{detail}"]
-        end
-
-        DiscoursePluginRegistry.oauth2_basic_required_json_paths.each do |x|
-          if fetched_user_details[x[:path]] != x[:required_value]
-            result = Auth::Result.new
-            result.failed = true
-            result.failed_reason = x[:error_message]
-            return result
-          end
-        end
-      else
-        result = Auth::Result.new
-        result.failed = true
-        result.failed_reason = I18n.t("login.authenticator_error_fetch_user_details")
-        return result
       end
     end
 
-    # --- PKCE: Clear the stored code verifier from the session ---
+    # ✅ PKCE: Ensure `code_verifier` is deleted after authentication
     if auth["rack.session"] && auth["rack.session"]["oauth2_code_verifier"]
+      Rails.logger.info "OAuth2 PKCE: Clearing stored code_verifier from session."
       auth["rack.session"].delete("oauth2_code_verifier")
     end
 
