@@ -56,6 +56,9 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
     options.authorize_params[:code_challenge_method] = "S256"
 
     super
+  rescue StandardError => e
+    Rails.logger.error "OAuth2 Request Phase Error: #{e.class} - #{e.message}"
+    return fail!(:request_error, "An error occurred during the OAuth2 request phase.")
   end
 
   # --- Token Exchange: Send `code_verifier` to Fix 400 Error ---
@@ -71,15 +74,31 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
       code_verifier: "m1z-5XPQrQ_sW5xEEs_Zt1QDDVesDzCK6WXbusHwe5g" # ✅ Always use fixed value
     }
 
-    # Exchange authorization code for access token
-    response = Faraday.post(options.client_options[:token_url], URI.encode_www_form(token_params), 'Content-Type' => 'application/x-www-form-urlencoded')
+    begin
+      # Exchange authorization code for access token
+      response = Faraday.post(options.client_options[:token_url], URI.encode_www_form(token_params), 'Content-Type' => 'application/x-www-form-urlencoded')
+      token_data = JSON.parse(response.body)
 
-    token_data = JSON.parse(response.body)
+      if token_data['error']
+        Rails.logger.error "OAuth2 Token Error: #{token_data['error_description'] || token_data['error']}"
+        return fail!(:invalid_credentials, token_data['error_description'] || token_data['error'])
+      end
 
-    return fail!(:invalid_credentials, token_data) if token_data['error']
+      # Store the access token
+      env['omniauth.auth'] = token_data
+      super
 
-    # Store the access token
-    env['omniauth.auth'] = token_data
-    super
+    rescue JSON::ParserError => e
+      Rails.logger.error "OAuth2 JSON Parsing Error: #{e.class} - #{e.message}"
+      return fail!(:invalid_response, "Invalid JSON response from OAuth2 server.")
+
+    rescue Faraday::ConnectionFailed => e
+      Rails.logger.error "OAuth2 Connection Error: #{e.class} - #{e.message}"
+      return fail!(:service_unavailable, "Could not connect to OAuth2 server.")
+
+    rescue StandardError => e
+      Rails.logger.error "OAuth2 Unknown Error: #{e.class} - #{e.message}"
+      return fail!(:unknown_error, "An unknown error occurred during authentication.")
+    end
   end
 end
