@@ -58,12 +58,16 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
     super
   rescue StandardError => e
     Rails.logger.error "OAuth2 Request Phase Error: #{e.class} - #{e.message}"
-    return fail!(:request_error, "An error occurred during the OAuth2 request phase.")
+    # ❗ Wrap the message in an exception:
+    return fail!(:request_error, OmniAuth::Error.new("An error occurred during the OAuth2 request phase."))
   end
 
   # --- Token Exchange: Send `code_verifier` to Fix 400 Error ---
   def callback_phase
-    return fail!(:invalid_state, 'State parameter missing') unless request.params['state'] == session.delete('oauth2_state')
+    # Check state param
+    unless request.params['state'] == session.delete('oauth2_state')
+      return fail!(:invalid_state, OmniAuth::Error.new('State parameter missing'))
+    end
 
     token_params = {
       client_id: options.client_id,
@@ -76,29 +80,46 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
 
     begin
       # Exchange authorization code for access token
-      response = Faraday.post(options.client_options[:token_url], URI.encode_www_form(token_params), 'Content-Type' => 'application/x-www-form-urlencoded')
+      response = Faraday.post(
+        options.client_options[:token_url],
+        URI.encode_www_form(token_params),
+        'Content-Type' => 'application/x-www-form-urlencoded'
+      )
       token_data = JSON.parse(response.body)
 
       if token_data['error']
         Rails.logger.error "OAuth2 Token Error: #{token_data['error_description'] || token_data['error']}"
-        return fail!(:invalid_credentials, token_data['error_description'] || token_data['error'])
+        # ❗ Wrap the provider’s error string in an exception:
+        return fail!(
+          :invalid_credentials,
+          OmniAuth::Error.new(token_data['error_description'] || token_data['error'])
+        )
       end
 
-      # Store the access token
+      # Store the access token in env['omniauth.auth'] for Discourse
       env['omniauth.auth'] = token_data
       super
 
     rescue JSON::ParserError => e
       Rails.logger.error "OAuth2 JSON Parsing Error: #{e.class} - #{e.message}"
-      return fail!(:invalid_response, "Invalid JSON response from OAuth2 server.")
+      return fail!(
+        :invalid_response,
+        OmniAuth::Error.new("Invalid JSON response from OAuth2 server.")
+      )
 
     rescue Faraday::ConnectionFailed => e
       Rails.logger.error "OAuth2 Connection Error: #{e.class} - #{e.message}"
-      return fail!(:service_unavailable, "Could not connect to OAuth2 server.")
+      return fail!(
+        :service_unavailable,
+        OmniAuth::Error.new("Could not connect to OAuth2 server.")
+      )
 
     rescue StandardError => e
       Rails.logger.error "OAuth2 Unknown Error: #{e.class} - #{e.message}"
-      return fail!(:unknown_error, "An unknown error occurred during authentication.")
+      return fail!(
+        :unknown_error,
+        OmniAuth::Error.new("An unknown error occurred during authentication.")
+      )
     end
   end
 end
