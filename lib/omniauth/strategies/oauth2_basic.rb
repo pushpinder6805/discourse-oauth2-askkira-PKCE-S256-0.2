@@ -46,19 +46,25 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
     # Fixed values provided by the client
     code_challenge = "y4mP7n8ASYkRXeLkilSb6TguU8pyDPRSmbgBnJJhDRw"
     code_verifier = "m1z-5XPQrQ_sW5xEEs_Zt1QDDVesDzCK6WXbusHwe5g"
-
-    # Store code_verifier in session for later use
     session["oauth2_code_verifier"] = code_verifier
 
-    # Add PKCE parameters to authorization request
+    # NEW: Generate a random state token
+    state = SecureRandom.hex(16)
+
+    # NEW: Store that state in the session for callback_phase
+    session["oauth2_state"] = state
+
+    # Add PKCE parameters and state to authorization request
     options.authorize_params ||= {}
     options.authorize_params[:code_challenge] = code_challenge
     options.authorize_params[:code_challenge_method] = "S256"
 
+    # NEW: Include state param in the authorize URL
+    options.authorize_params[:state] = state
+
     super
   rescue StandardError => e
     Rails.logger.error "OAuth2 Request Phase Error: #{e.class} - #{e.message}"
-    # ❗ Wrap the message in an exception:
     return fail!(:request_error, OmniAuth::Error.new("An error occurred during the OAuth2 request phase."))
   end
 
@@ -75,7 +81,9 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
       grant_type: 'authorization_code',
       redirect_uri: callback_url,
       code: request.params['code'],
-      code_verifier: "m1z-5XPQrQ_sW5xEEs_Zt1QDDVesDzCK6WXbusHwe5g" # ✅ Always use fixed value
+
+      # ✅ Always use the fixed code_verifier
+      code_verifier: "m1z-5XPQrQ_sW5xEEs_Zt1QDDVesDzCK6WXbusHwe5g"
     }
 
     begin
@@ -89,7 +97,6 @@ class OmniAuth::Strategies::Oauth2Basic < ::OmniAuth::Strategies::OAuth2
 
       if token_data['error']
         Rails.logger.error "OAuth2 Token Error: #{token_data['error_description'] || token_data['error']}"
-        # ❗ Wrap the provider’s error string in an exception:
         return fail!(
           :invalid_credentials,
           OmniAuth::Error.new(token_data['error_description'] || token_data['error'])
