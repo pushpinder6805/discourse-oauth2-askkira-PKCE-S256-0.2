@@ -27,13 +27,11 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
                             token_url: SiteSetting.oauth2_token_url,
                             token_method: SiteSetting.oauth2_token_url_method.downcase.to_sym,
                           }
-                          opts[:authorize_options] = SiteSetting
-                            .oauth2_authorize_options
-                            .split("|")
-                            .map(&:to_sym)
+                          opts[:authorize_options] =
+                            SiteSetting.oauth2_authorize_options.split("|").map(&:to_sym)
 
                           if SiteSetting.oauth2_authorize_signup_url.present? &&
-                               ActionDispatch::Request.new(env).params["signup"].present?
+                              ActionDispatch::Request.new(env).params["signup"].present?
                             opts[:client_options][:authorize_url] = SiteSetting.oauth2_authorize_signup_url
                           end
 
@@ -132,7 +130,10 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
           end
         else
           Rails.logger.error "OAuth2 Authentication Error: Could not fetch user details."
-          return fail!(:invalid_response, "Failed to fetch user details from OAuth2 provider.")
+          return fail!(
+            :invalid_response,
+            OmniAuth::Error.new("Failed to fetch user details from OAuth2 provider.")
+          )
         end
       end
 
@@ -145,7 +146,11 @@ class OAuth2BasicAuthenticator < Auth::ManagedAuthenticator
       super(auth, existing_account: existing_account)
     rescue StandardError => e
       Rails.logger.error "OAuth2 Authentication Error: #{e.class} - #{e.message}"
-      return fail!(:unknown_error, "An unknown error occurred during authentication.")
+
+      return fail!(
+        :unknown_error,
+        OmniAuth::Error.new("An unknown error occurred during authentication.")
+      )
     end
   end
 
